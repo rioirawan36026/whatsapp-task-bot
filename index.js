@@ -21,7 +21,13 @@ async function connectToWhatsApp() {
 })
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update
+    const { connection, lastDisconnect, qr } = update
+    
+    // Display QR code when available
+    if (qr) {
+        console.log('📱 QR Code received, scan with WhatsApp:')
+        qrcode.generate(qr, { small: true })
+    }
         
         if(connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut
