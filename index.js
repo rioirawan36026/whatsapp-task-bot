@@ -10,34 +10,37 @@ app.use(bodyParser.json())
 
 let sock
 
-// N8N Webhook URL - ganti dengan URL n8n webhook Anda
+// N8N Webhook URL
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'https://your-n8n-webhook-url.com/webhook/whatsapp-task'
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
     
     sock = makeWASocket({
-    auth: state
-})
+        auth: state,
+        browser: ['WhatsApp Task Bot', 'Chrome', '1.0.0'],
+        logger: { level: 'silent' }
+    })
 
     sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update
-    
-    // Display QR code when available
-    if (qr) {
-        console.log('📱 QR Code received, scan with WhatsApp:')
-        qrcode.generate(qr, { small: true })
-    }
+        const { connection, lastDisconnect, qr } = update
+        
+        // Display QR code when available
+        if (qr) {
+            console.log('📱 QR Code received! Scan with your WhatsApp:')
+            qrcode.generate(qr, { small: true })
+        }
         
         if(connection === 'close') {
             const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut
-            console.log('connection closed due to ', lastDisconnect?.error, ', reconnecting ', shouldReconnect)
+            console.log('❌ Connection closed:', lastDisconnect?.error, ', reconnecting:', shouldReconnect)
             
             if(shouldReconnect) {
-                connectToWhatsApp()
+                setTimeout(() => connectToWhatsApp(), 5000) // Delay 5 seconds
             }
         } else if(connection === 'open') {
-            console.log('✅ WhatsApp Bot Connected!')
+            console.log('✅ WhatsApp Bot Connected Successfully!')
+            console.log('📞 Bot number:', sock.user.id)
         }
     })
 
@@ -63,7 +66,6 @@ async function connectToWhatsApp() {
                     messageId: message.key.id
                 }
                 
-                // Send to n8n
                 const response = await axios.post(N8N_WEBHOOK_URL, webhookData)
                 console.log('✅ Sent to n8n:', response.status)
                 
@@ -78,6 +80,10 @@ async function connectToWhatsApp() {
 app.post('/send-message', async (req, res) => {
     try {
         const { to, message } = req.body
+        
+        if (!sock || !sock.user) {
+            return res.status(503).json({ status: 'error', message: 'WhatsApp not connected' })
+        }
         
         await sock.sendMessage(to, { text: message })
         
@@ -95,23 +101,46 @@ app.get('/status', (req, res) => {
     res.json({ 
         status: 'running',
         connected: sock?.user ? true : false,
-        user: sock?.user
+        user: sock?.user?.id || null,
+        timestamp: new Date().toISOString()
     })
 })
 
-// Start server
+// Keep alive endpoint
+app.get('/', (req, res) => {
+    res.json({ 
+        message: 'WhatsApp Task Bot is running!',
+        status: sock?.user ? 'connected' : 'disconnected'
+    })
+})
+
+// Start server first, then connect to WhatsApp
 const PORT = process.env.PORT || 3000
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`)
-    console.log(`📱 WhatsApp Bot starting...`)
-    connectToWhatsApp()
+    console.log(`📱 Starting WhatsApp connection...`)
+    
+    // Connect to WhatsApp after server starts
+    setTimeout(() => {
+        connectToWhatsApp()
+    }, 2000)
 })
 
 // Graceful shutdown
+process.on('SIGTERM', async () => {
+    console.log('🛑 Shutting down gracefully...')
+    if (sock) {
+        await sock.logout()
+    }
+    server.close()
+    process.exit(0)
+})
+
 process.on('SIGINT', async () => {
     console.log('🛑 Shutting down...')
     if (sock) {
         await sock.logout()
     }
+    server.close()
     process.exit(0)
 })
