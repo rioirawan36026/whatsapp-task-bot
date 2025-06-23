@@ -15,6 +15,11 @@ let lastQR = null
 // N8N Webhook URL
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'https://your-n8n-webhook-url.com/webhook/whatsapp-task'
 
+// Force console output
+console.log('🚀 Starting WhatsApp Task Bot...')
+console.log('📅 Timestamp:', new Date().toISOString())
+console.log('🌍 Environment:', process.env.NODE_ENV || 'development')
+
 // Keep Railway happy with health checks
 setInterval(() => {
     console.log(`🔄 Health check: ${new Date().toISOString()} - State: ${connectionState}`)
@@ -26,6 +31,12 @@ async function connectToWhatsApp() {
         connectionState = 'connecting'
         
         const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys')
+        
+        // Force new session debug
+        console.log('🔄 Forcing new WhatsApp session...')
+        if (!state.creds) {
+            console.log('🆕 No existing credentials, will generate QR')
+        }
         
         sock = makeWASocket({
             auth: state,
@@ -39,7 +50,7 @@ async function connectToWhatsApp() {
                 lastQR = qr
                 console.log('📱 QR Code received! Please scan quickly:')
                 console.log('🔗 QR Data for manual generation:')
-                console.log(qr)
+                console.log('QR_START:', qr, ':QR_END')
                 console.log('='.repeat(80))
                 qrcode.generate(qr, { small: false })
                 console.log('='.repeat(80))
@@ -118,8 +129,11 @@ async function connectToWhatsApp() {
     }
 }
 
-// QR Code endpoint untuk akses via browser
+// QR Code endpoint dengan debug yang lebih baik
 app.get('/qr', (req, res) => {
+    console.log('🔍 QR endpoint accessed, lastQR:', lastQR ? 'available' : 'null')
+    console.log('🔍 Connection state:', connectionState)
+    
     if (lastQR) {
         res.send(`
             <!DOCTYPE html>
@@ -158,12 +172,24 @@ app.get('/qr', (req, res) => {
                             cursor: pointer;
                             margin-top: 15px;
                         }
+                        .debug {
+                            background: #f5f5f5;
+                            padding: 10px;
+                            margin: 10px 0;
+                            border-radius: 5px;
+                            font-size: 12px;
+                            word-break: break-all;
+                        }
                     </style>
                 </head>
                 <body>
                     <div class="container">
                         <h2>📱 WhatsApp QR Code</h2>
-                        <div id="qrcode"></div>
+                        <div id="qrcode">Loading QR Code...</div>
+                        <div class="debug">
+                            <strong>QR Data Preview:</strong><br>
+                            ${lastQR.substring(0, 50)}...
+                        </div>
                         <div class="instructions">
                             1. Open WhatsApp on your phone<br>
                             2. Go to Menu → Linked Devices<br>
@@ -184,8 +210,10 @@ app.get('/qr', (req, res) => {
                             }
                         }, function (error) {
                             if (error) {
-                                console.error(error)
-                                qrContainer.innerHTML = '<p>Error generating QR code</p>'
+                                console.error('QR Error:', error)
+                                qrContainer.innerHTML = '<p style="color:red;">Error generating QR: ' + error.message + '</p>'
+                            } else {
+                                console.log('QR Generated successfully!')
                             }
                         })
                     </script>
@@ -200,9 +228,17 @@ app.get('/qr', (req, res) => {
                     <h2>🔄 No QR Code Available</h2>
                     <p>Bot is either connected or not ready yet.</p>
                     <p>Connection State: <strong>${connectionState}</strong></p>
+                    <p>Debug: lastQR is ${lastQR ? 'set' : 'null'}</p>
+                    <p>Time: ${new Date().toISOString()}</p>
                     <button onclick="location.reload()" style="padding:10px 20px; background:#25D366; color:white; border:none; border-radius:5px;">
                         🔄 Refresh
                     </button>
+                    <script>
+                        // Auto refresh every 5 seconds
+                        setTimeout(() => {
+                            location.reload()
+                        }, 5000)
+                    </script>
                 </body>
             </html>
         `)
