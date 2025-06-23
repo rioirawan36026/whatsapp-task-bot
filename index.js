@@ -11,6 +11,7 @@ app.use(bodyParser.json())
 let sock
 let connectionState = 'disconnected'
 let lastQR = null
+let qrRegenerateInterval = null
 
 // N8N Webhook URL
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'https://your-n8n-webhook-url.com/webhook/whatsapp-task'
@@ -19,6 +20,21 @@ const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'https://your-n8n-webhook
 console.log('🚀 Starting WhatsApp Task Bot...')
 console.log('📅 Timestamp:', new Date().toISOString())
 console.log('🌍 Environment:', process.env.NODE_ENV || 'development')
+
+// Function to force QR regeneration
+function forceQRRegeneration() {
+    console.log('🔄 Forcing QR regeneration...')
+    if (sock && connectionState === 'waiting_for_scan') {
+        try {
+            // Disconnect and reconnect to force new QR
+            sock.ws.close()
+        } catch (error) {
+            console.log('Error closing connection for QR regen:', error.message)
+            // If direct close fails, restart connection
+            setTimeout(() => connectToWhatsApp(), 2000)
+        }
+    }
+}
 
 // Keep Railway happy with health checks
 setInterval(() => {
@@ -54,15 +70,34 @@ async function connectToWhatsApp() {
                 console.log('='.repeat(80))
                 qrcode.generate(qr, { small: false })
                 console.log('='.repeat(80))
-                console.log('⚡ SCAN IMMEDIATELY! QR expires in 20 seconds')
+                console.log('⚡ You have 60 SECONDS to scan this QR!')
+                console.log('🔄 New QR will be generated automatically after 1 minute')
                 console.log('💡 If QR not scannable in logs, visit: /qr endpoint for web QR')
                 console.log('🌐 Or use online QR generator with data above')
                 connectionState = 'waiting_for_scan'
+                
+                // Clear any existing interval
+                if (qrRegenerateInterval) {
+                    clearTimeout(qrRegenerateInterval)
+                }
+                
+                // Set new QR regeneration after 60 seconds
+                qrRegenerateInterval = setTimeout(() => {
+                    console.log('⏰ 60 seconds passed, generating new QR...')
+                    forceQRRegeneration()
+                }, 60000) // 60 seconds
             }
             
             if(connection === 'close') {
                 connectionState = 'disconnected'
                 lastQR = null
+                
+                // Clear QR regeneration interval
+                if (qrRegenerateInterval) {
+                    clearTimeout(qrRegenerateInterval)
+                    qrRegenerateInterval = null
+                }
+                
                 const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut
                 console.log('❌ Connection closed:', lastDisconnect?.error?.message || 'Unknown error')
                 
@@ -75,6 +110,13 @@ async function connectToWhatsApp() {
             } else if(connection === 'open') {
                 connectionState = 'connected'
                 lastQR = null
+                
+                // Clear QR regeneration interval
+                if (qrRegenerateInterval) {
+                    clearTimeout(qrRegenerateInterval)
+                    qrRegenerateInterval = null
+                }
+                
                 console.log('✅ WhatsApp Bot Connected Successfully!')
                 console.log('📞 Bot ready to receive messages')
                 console.log('🎯 Bot number:', sock.user?.id || 'Unknown')
@@ -180,11 +222,22 @@ app.get('/qr', (req, res) => {
                             font-size: 12px;
                             word-break: break-all;
                         }
+                        .timer {
+                            background: #fff3cd;
+                            border: 1px solid #ffeaa7;
+                            padding: 10px;
+                            margin: 10px 0;
+                            border-radius: 5px;
+                            font-weight: bold;
+                        }
                     </style>
                 </head>
                 <body>
                     <div class="container">
                         <h2>📱 WhatsApp QR Code</h2>
+                        <div class="timer">
+                            ⏰ Time remaining: <span id="countdown">60</span> seconds
+                        </div>
                         <div id="qrcode">Loading QR Code...</div>
                         <div class="debug">
                             <strong>QR Data Preview:</strong><br>
@@ -195,27 +248,65 @@ app.get('/qr', (req, res) => {
                             2. Go to Menu → Linked Devices<br>
                             3. Tap "Link a Device"<br>
                             4. Scan this QR code<br>
+                            <br>
+                            <strong>⚡ New QR auto-generated every 60 seconds!</strong>
                         </div>
                         <button class="refresh-btn" onclick="location.reload()">🔄 Refresh QR</button>
+                        
+                        <!-- Manual QR fallback -->
+                        <div id="manual-qr" style="display:none; margin-top:20px;">
+                            <h3>Manual QR Generation</h3>
+                            <textarea id="qr-data" style="width:100%; height:100px; font-size:10px;">${lastQR}</textarea>
+                            <br><br>
+                            <a href="https://qr-code-generator.com" target="_blank" style="background:#25D366; color:white; padding:10px 20px; text-decoration:none; border-radius:5px;">
+                                🔗 Open QR Generator
+                            </a>
+                        </div>
                     </div>
+                    
                     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
                     <script>
                         const qrContainer = document.getElementById('qrcode');
-                        QRCode.toCanvas(qrContainer, '${lastQR}', {
-                            width: 256,
-                            margin: 2,
-                            color: {
-                                dark: '#000000',
-                                light: '#FFFFFF'
+                        const qrData = '${lastQR}';
+                        const countdownElement = document.getElementById('countdown');
+                        
+                        // Countdown timer
+                        let timeLeft = 60;
+                        const timer = setInterval(() => {
+                            timeLeft--;
+                            countdownElement.textContent = timeLeft;
+                            
+                            if (timeLeft <= 0) {
+                                clearInterval(timer);
+                                location.reload(); // Auto refresh when time is up
                             }
-                        }, function (error) {
-                            if (error) {
-                                console.error('QR Error:', error)
-                                qrContainer.innerHTML = '<p style="color:red;">Error generating QR: ' + error.message + '</p>'
-                            } else {
-                                console.log('QR Generated successfully!')
-                            }
-                        })
+                        }, 1000);
+                        
+                        // Generate QR Code
+                        if (typeof QRCode !== 'undefined') {
+                            QRCode.toCanvas(qrContainer, qrData, {
+                                width: 256,
+                                margin: 2,
+                                color: {
+                                    dark: '#000000',
+                                    light: '#FFFFFF'
+                                }
+                            }, function (error) {
+                                if (error) {
+                                    console.error('QRCode.js failed:', error)
+                                    showManualQR()
+                                } else {
+                                    console.log('QR Generated successfully!')
+                                }
+                            })
+                        } else {
+                            showManualQR()
+                        }
+                        
+                        function showManualQR() {
+                            qrContainer.innerHTML = '<p style="color:red;">QR generation failed. Use manual method below.</p>'
+                            document.getElementById('manual-qr').style.display = 'block'
+                        }
                     </script>
                 </body>
             </html>
@@ -315,6 +406,13 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 process.on('SIGTERM', async () => {
     console.log('🛑 Received SIGTERM, shutting down gracefully...')
     connectionState = 'shutting_down'
+    
+    // Clear QR regeneration interval
+    if (qrRegenerateInterval) {
+        clearTimeout(qrRegenerateInterval)
+        qrRegenerateInterval = null
+    }
+    
     if (sock && sock.user) {
         try {
             await sock.logout()
@@ -331,6 +429,13 @@ process.on('SIGTERM', async () => {
 process.on('SIGINT', async () => {
     console.log('🛑 Received SIGINT, shutting down...')
     connectionState = 'shutting_down'
+    
+    // Clear QR regeneration interval
+    if (qrRegenerateInterval) {
+        clearTimeout(qrRegenerateInterval)
+        qrRegenerateInterval = null
+    }
+    
     if (sock && sock.user) {
         try {
             await sock.logout()
