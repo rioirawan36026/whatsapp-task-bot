@@ -28,13 +28,7 @@ async function connectToWhatsApp() {
         
         sock = makeWASocket({
             auth: state,
-            browser: ['WhatsApp Task Bot', 'Chrome', '1.0.0'],
-            logger: { level: 'silent' },
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 0,
-            retryRequestDelayMs: 250,
-            maxMsgRetryCount: 5,
-            keepAliveIntervalMs: 30000
+            browser: ['WhatsApp Task Bot', 'Chrome', '1.0.0']
         })
 
         sock.ev.on('connection.update', (update) => {
@@ -212,10 +206,8 @@ process.on('SIGINT', async () => {
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error.message)
-    // Don't exit, just log the error
 })
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason)
-    // Don't exit, just log the error
 })
