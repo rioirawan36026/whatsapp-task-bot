@@ -336,27 +336,131 @@ app.get('/qr', (req, res) => {
     }
 })
 
-// Endpoint untuk n8n kirim reply
+// Endpoint untuk n8n kirim reply - ROBUST VERSION
 app.post('/send-message', async (req, res) => {
     try {
-        const { to, message } = req.body
+        // Ambil semua kemungkinan format dari n8n atau client lain
+        let { to, message, jid, text, phone, msg } = req.body
         
-        if (!sock || !sock.user || connectionState !== 'connected') {
-            return res.status(503).json({ 
+        console.log('📝 Raw request body:', JSON.stringify(req.body, null, 2))
+        
+        // Flexible parameter handling - coba berbagai nama field
+        const targetJid = to || jid || phone
+        const messageText = message || text || msg
+        
+        console.log('📝 Processed params:', { 
+            targetJid: targetJid || 'MISSING', 
+            messageText: messageText ? 'present' : 'MISSING',
+            messageLength: messageText ? messageText.length : 0
+        })
+        
+        // Validasi target
+        if (!targetJid) {
+            console.error('❌ Missing target JID from request:', req.body)
+            return res.status(400).json({ 
                 status: 'error', 
-                message: 'WhatsApp not connected',
-                connectionState: connectionState
+                message: 'Parameter "to", "jid", or "phone" is required',
+                received_params: Object.keys(req.body)
             })
         }
         
-        await sock.sendMessage(to, { text: message })
+        // Validasi message - allow empty string tapi tidak null/undefined
+        if (messageText === null || messageText === undefined) {
+            console.error('❌ Missing message from request:', req.body)
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Parameter "message", "text", or "msg" is required',
+                received_params: Object.keys(req.body)
+            })
+        }
         
-        console.log(`📤 Reply sent to ${to}: ${message}`)
-        res.json({ status: 'success', message: 'Message sent' })
+        // Cek koneksi WhatsApp
+        if (!sock || !sock.user || connectionState !== 'connected') {
+            console.error('❌ WhatsApp not connected, state:', connectionState)
+            return res.status(503).json({ 
+                status: 'error', 
+                message: 'WhatsApp not connected',
+                connectionState: connectionState,
+                hasSocket: !!sock,
+                hasUser: !!(sock?.user)
+            })
+        }
+        
+        // Auto-format JID - handle semua kemungkinan format
+        let finalJid = String(targetJid).trim()
+        
+        // Hapus karakter aneh dan whitespace
+        finalJid = finalJid.replace(/[^\d@.]/g, '')
+        
+        // Tambah @s.whatsapp.net jika belum ada
+        if (!finalJid.includes('@')) {
+            finalJid = finalJid + '@s.whatsapp.net'
+        }
+        
+        // Pastikan format JID valid
+        if (!finalJid.match(/^\d+@s\.whatsapp\.net$/)) {
+            console.error('❌ Invalid JID format:', finalJid)
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Invalid phone number format',
+                originalInput: targetJid,
+                processedJid: finalJid
+            })
+        }
+        
+        // Sanitize message - pastikan string dan handle undefined/null
+        let finalMessage = String(messageText || 'Empty message').trim()
+        
+        // Jika message kosong, beri default
+        if (!finalMessage || finalMessage === 'undefined' || finalMessage === 'null') {
+            finalMessage = 'Hello! This is an automated message.'
+        }
+        
+        console.log('📤 Final send params:', { 
+            finalJid, 
+            finalMessage: finalMessage.substring(0, 100) + (finalMessage.length > 100 ? '...' : ''),
+            messageLength: finalMessage.length
+        })
+        
+        // Kirim pesan dengan error handling yang lebih baik
+        try {
+            await sock.sendMessage(finalJid, { text: finalMessage })
+            console.log(`✅ Message sent successfully to ${finalJid}`)
+        } catch (sendError) {
+            console.error('❌ Baileys sendMessage error:', sendError.message)
+            
+            // Coba format lain jika gagal
+            if (sendError.message.includes('jidDecode')) {
+                console.log('🔄 Trying alternative JID format...')
+                const altJid = finalJid.replace('@s.whatsapp.net', '@c.us')
+                await sock.sendMessage(altJid, { text: finalMessage })
+                console.log(`✅ Message sent with alternative format: ${altJid}`)
+            } else {
+                throw sendError
+            }
+        }
+        
+        res.json({ 
+            status: 'success', 
+            message: 'Message sent successfully',
+            to: finalJid,
+            messageLength: finalMessage.length,
+            timestamp: new Date().toISOString()
+        })
         
     } catch (error) {
-        console.error('❌ Error sending message:', error)
-        res.status(500).json({ status: 'error', message: error.message })
+        console.error('❌ Send message error:', {
+            message: error.message,
+            stack: error.stack,
+            requestBody: req.body
+        })
+        
+        res.status(500).json({ 
+            status: 'error', 
+            message: error.message,
+            errorType: error.constructor.name,
+            timestamp: new Date().toISOString()
+        })
     }
 })
 
@@ -381,6 +485,7 @@ app.get('/', (req, res) => {
         connected: sock?.user ? true : false,
         qr_available: lastQR ? true : false,
         qr_endpoint: '/qr',
+        send_endpoint: '/send-message',
         timestamp: new Date().toISOString()
     })
 })
@@ -390,12 +495,36 @@ app.get('/ping', (req, res) => {
     res.json({ pong: true, timestamp: new Date().toISOString() })
 })
 
+// Test endpoint untuk debugging
+app.post('/test-send', async (req, res) => {
+    try {
+        const testTo = '6281234098714@s.whatsapp.net'
+        const testMessage = 'Test message from bot'
+        
+        if (!sock || !sock.user || connectionState !== 'connected') {
+            return res.status(503).json({ 
+                status: 'error', 
+                message: 'WhatsApp not connected' 
+            })
+        }
+        
+        await sock.sendMessage(testTo, { text: testMessage })
+        res.json({ status: 'success', message: 'Test message sent' })
+        
+    } catch (error) {
+        console.error('❌ Test send error:', error)
+        res.status(500).json({ status: 'error', message: error.message })
+    }
+})
+
 // Start server first, then connect to WhatsApp
 const PORT = process.env.PORT || 3000
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`)
     console.log(`🌐 Health endpoint: http://localhost:${PORT}/`)
     console.log(`📱 QR Code endpoint: http://localhost:${PORT}/qr`)
+    console.log(`📤 Send Message endpoint: http://localhost:${PORT}/send-message`)
+    console.log(`🧪 Test Send endpoint: http://localhost:${PORT}/test-send`)
     console.log(`📱 Starting WhatsApp connection...`)
     
     // Start WhatsApp connection immediately
@@ -452,6 +581,7 @@ process.on('SIGINT', async () => {
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
     console.error('❌ Uncaught Exception:', error.message)
+    console.error('Stack:', error.stack)
 })
 
 process.on('unhandledRejection', (reason, promise) => {
